@@ -1,7 +1,10 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
+using CommandLine;
 using NuGet;
 
 namespace NugetPromoter
@@ -11,11 +14,10 @@ namespace NugetPromoter
         private static void Main(string[] args)
         {
             var options = new Options();
-            var result = CommandLine.Parser.Default.ParseArguments(args, options);
+            var result = Parser.Default.ParseArguments(args, options);
 
             if (!result)
                 throw new NotSupportedException("Invalid arguments");
-
 
             if (!File.Exists(options.PackageToPromote))
                 throw new FileNotFoundException("Cannot find the file", options.PackageToPromote);
@@ -31,8 +33,24 @@ namespace NugetPromoter
             if (!match.Success)
                 throw new NotSupportedException("No semantic version was found in the metadata of the package.");
 
-            string newVersion = match.Value;
+            var newVersion = match.Value;
             Console.WriteLine($"The new version of the package will be {newVersion}");
+
+            // Try to find rcedit.exe
+            var exe = findExecutable("rcedit.exe");
+            foreach (var dimaExe in Directory.GetFiles(temppath, "*.exe"))   
+            {
+                Console.WriteLine($"Adjusting the product version of {dimaExe} to {newVersion}");
+                var rceditargs = $"{dimaExe} --set-product-version {newVersion}";
+                var process = Process.Start(exe, rceditargs);
+                process.WaitForExit(10000);
+                if (process.ExitCode != 0)
+                {
+                    var msg = $"Failed to modify resources, command invoked was: '{exe} {string.Join(" ", rceditargs)}'";
+                    throw new Exception(msg);
+                }   
+            }
+
             var metadata = new ManifestMetadata
             {
                 Id = package.Id,
@@ -52,9 +70,9 @@ namespace NugetPromoter
 
             var builder = new PackageBuilder();
             var files = Directory.GetFiles(temppath, "*", SearchOption.AllDirectories)
-                            .Where(f => !f.EndsWith(".nuspec"))
-                            .Select(f => new ManifestFile { Source = f, Target = f.Replace(temppath, "") })
-                            .ToList();
+                .Where(f => !f.EndsWith(".nuspec"))
+                .Select(f => new ManifestFile {Source = f, Target = f.Replace(temppath, "")})
+                .ToList();
             builder.PopulateFiles("", files);
             builder.Populate(metadata);
 
@@ -69,6 +87,22 @@ namespace NugetPromoter
             }
 
             Console.WriteLine("Succesfully promoted package");
+        }
+
+        private static string findExecutable(string toFind)
+        {
+            var exe = @".\" + toFind;
+            if (!File.Exists(exe))
+            {
+                exe = Path.Combine(
+                    Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
+                    toFind);
+
+                // Run down PATH and hope for the best
+                if (!File.Exists(exe)) exe = toFind;
+            }
+
+            return exe;
         }
     }
 }
